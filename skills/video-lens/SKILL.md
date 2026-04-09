@@ -19,6 +19,23 @@ Trigger this skill when the user:
 - Uses phrases like "what's this video about", "give me the highlights", "TL;DR this", "make notes on this talk"
 - Requests a specific transcript language: "in Spanish", "French subtitles", "with English captions", or appends a language code after the URL/ID
 - Requests enriched metadata or chapter-based outline: "with chapters", "include description", "full metadata", "use yt-dlp", "with video description"
+- Requests a raw transcript export: "just the transcript", "transcript only", "get me the transcript", "save the transcript", "export transcript", "download transcript", "transcript as text"
+- Requests a plain-text summary (no HTML): "summary as text", "text summary", "plain text summary", "save summary to file", "summary only"
+
+## Output Modes
+
+The skill supports three output modes. Determine the mode from the user's message before starting the steps.
+
+| Mode | Trigger phrases | Pipeline |
+|---|---|---|
+| **Quick export** (default) | Any URL/ID without a mode qualifier — bare URLs with no instructions | Steps 1 → 2 → 2b → 3 → Transcript Export + Summary Export (both files) |
+| **Transcript only** | "transcript only", "just the transcript", "export transcript", "download transcript", "transcript as text" | Steps 1 → 2 → Transcript Export |
+| **Summary text only** | "summary as text", "text summary", "plain text summary", "summary only", "save summary to file" | Steps 1 → 2 → 2b → 3 → Summary Export |
+| **Full HTML report** | "full report", "HTML report", "summarise", "digest", "analyse", "with player" | Steps 1 → 7 |
+
+**Timestamp default:** timestamps are **off** unless the user says "with timestamps" or "timestamped".
+
+**Language default:** when no language is specified, default to English (`en`). The user can override with a language name or BCP-47 code.
 
 ## Steps
 
@@ -56,7 +73,7 @@ Then continue with Step 2 as normal. This is a non-blocking notification — do 
 **Before running this step:** identify the language preference (`LANG_PREF`) from the user's message:
 - Map language names to BCP-47 codes: English→`en`, Spanish→`es`, French→`fr`, German→`de`, Japanese→`ja`, Portuguese→`pt`, Italian→`it`, Chinese→`zh`, Korean→`ko`, Russian→`ru`
 - If a bare BCP-47 code is given, use it directly
-- If no language is expressed, set `LANG_PREF` to `""` (auto-select)
+- If no language is expressed, set `LANG_PREF` to `"en"` (default to English)
 
 This is a *transcript selection* preference — it fetches the requested language track from YouTube. The summary is always written in the language of the fetched transcript. This is not a translation feature.
 
@@ -73,6 +90,43 @@ When the Bash output is truncated and saved to a temp file, read the **entire fi
 If the output contains an `ERROR:` line (e.g. `ERROR:CAPTIONS_DISABLED`, `ERROR:AGE_RESTRICTED`, `ERROR:VIDEO_UNAVAILABLE`), handle it per the **Error Handling** table below.
 
 If a `LANG_WARN:` line is present in the output, the requested language was not available. Append ` · ⚠ Requested language not available` to `META_LINE`.
+
+### Transcript Export
+
+**Run this section when the output mode is "Transcript only" or "Quick export".** After Step 2 completes (and after Step 3 / Summary Export if in Quick export mode), do the following:
+
+1. Parse the transcript output from Step 2. Extract the `TITLE:`, `DATE:`, `TIME:`, and `LANG:` metadata lines, then collect all transcript lines (those starting with `[`).
+
+2. Determine the timestamp preference:
+   - **Without timestamps** (default): strip the `[H:MM:SS] ` or `[M:SS] ` prefix, leaving only the text.
+   - **With timestamps**: keep timestamps, e.g. `[1:23] Hello world`. Only when the user explicitly asks for them.
+
+3. **Format the transcript for readability.** Raw YouTube transcripts are a wall of text with no punctuation or structure. Clean them up:
+   - **Merge fragments:** join the raw caption segments into continuous prose. Remove line breaks that split mid-sentence.
+   - **Add punctuation:** insert periods, commas, question marks, and other punctuation where natural pauses, sentence boundaries, and clause breaks occur. Capitalise the first word after each period/question mark.
+   - **Paragraph breaks:** insert a blank line between paragraphs. Start a new paragraph when the speaker shifts topic, when there is a clear rhetorical transition, or roughly every 3–6 sentences — whichever comes first. Aim for readable, well-paced paragraphs, not a single block of text.
+   - **Speaker labels:** if the video is a conversation/interview and speaker changes are detectable (e.g. from context cues), insert speaker labels like `**Speaker Name:**` or `**Host:**` / `**Guest:**` on a new line before their speech.
+   - **Preserve meaning:** do not rephrase, summarise, or omit any content. The transcript must remain verbatim in substance — you are only adding punctuation, capitalisation, and whitespace.
+
+4. Build the output file:
+   - Directory: `~/Downloads/video-lens/transcripts/` — create with `mkdir -p ~/Downloads/video-lens/transcripts/`
+   - Filename: `YYYY-MM-DD-HHMMSS-transcript_<VIDEO_ID>_<slug>.txt` (same slug rules as Step 4)
+   - File content:
+     ```
+     Title: {title}
+     URL: https://www.youtube.com/watch?v={VIDEO_ID}
+     Language: {lang}
+     Date exported: {date}
+
+     ---
+
+     {formatted transcript text}
+     ```
+
+5. Write the file using the Write tool. Print the path to the user: `TRANSCRIPT: <path>`.
+
+If the mode is **Transcript only**, stop here — do not continue to Steps 2b–7.
+If the mode is **Quick export**, this step runs alongside Summary Export (order does not matter).
 
 ### 2b. Fetch enriched metadata with yt-dlp
 
@@ -156,6 +210,44 @@ Rules:
 | Very long (>90 min) | 3–4 sentences | 3–4 sentences | 10–20 entries |
 
 Key Point count is governed by content density (3–8 typical), not video length.
+
+### Summary Export
+
+**Run this section when the output mode is "Summary text only" or "Quick export".** After Step 3 completes, do the following:
+
+1. Build a plain-text file from the content generated in Step 3. Strip all HTML tags — this is a plain-text file, not HTML.
+
+2. Build the output file:
+   - Directory: `~/Downloads/video-lens/summaries/` — create with `mkdir -p ~/Downloads/video-lens/summaries/`
+   - Filename: `YYYY-MM-DD-HHMMSS-summary_<VIDEO_ID>_<slug>.txt` (same slug rules as Step 4)
+   - File content:
+     ```
+     Title: {title}
+     URL: https://www.youtube.com/watch?v={VIDEO_ID}
+     {META_LINE}
+     Date: {date}
+
+     ===  SUMMARY  ===
+
+     {summary text}
+
+     ===  KEY POINTS  ===
+
+     {numbered list — each key point as: "N. Bold headline — insight sentence\n   Analytical paragraph\n"}
+
+     ===  TAKEAWAY  ===
+
+     {takeaway text}
+
+     ===  OUTLINE  ===
+
+     {each entry as: "[M:SS] Title — Detail sentence"}
+     ```
+
+3. Write the file using the Write tool. Print the path to the user: `SUMMARY: <path>`.
+
+If the mode is **Summary text only**, stop here — do not continue to Steps 4–7.
+If the mode is **Quick export**, also run Transcript Export (order does not matter), then stop.
 
 ### 4. Determine the output filename
 
