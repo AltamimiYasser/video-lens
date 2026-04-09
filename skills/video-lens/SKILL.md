@@ -21,16 +21,18 @@ Trigger this skill when the user:
 - Requests enriched metadata or chapter-based outline: "with chapters", "include description", "full metadata", "use yt-dlp", "with video description"
 - Requests a raw transcript export: "just the transcript", "transcript only", "get me the transcript", "save the transcript", "export transcript", "download transcript", "transcript as text"
 - Requests a plain-text summary (no HTML): "summary as text", "text summary", "plain text summary", "save summary to file", "summary only"
+- Requests study notes: "notes", "school notes", "study notes", "lecture notes", "study guide", "revision notes", "exam notes"
 
 ## Output Modes
 
-The skill supports three output modes. Determine the mode from the user's message before starting the steps.
+The skill supports multiple output modes. Determine the mode from the user's message before starting the steps.
 
 | Mode | Trigger phrases | Pipeline |
 |---|---|---|
-| **Quick export** (default) | Any URL/ID without a mode qualifier — bare URLs with no instructions | Steps 1 → 2 → 2b → 3 → Transcript Export + Summary Export (both files) |
+| **Quick export** (default) | Any URL/ID without a mode qualifier — bare URLs with no instructions | Steps 1 → 2 → 2b → 3 → Transcript Export + Summary Export + Notes Export (all 3 files) |
 | **Transcript only** | "transcript only", "just the transcript", "export transcript", "download transcript", "transcript as text" | Steps 1 → 2 → Transcript Export |
-| **Summary text only** | "summary as text", "text summary", "plain text summary", "summary only", "save summary to file" | Steps 1 → 2 → 2b → 3 → Summary Export |
+| **Summary only** | "summary as text", "text summary", "plain text summary", "summary only", "save summary to file" | Steps 1 → 2 → 2b → 3 → Summary Export |
+| **Notes only** | "notes only", "just the notes", "study notes", "lecture notes", "school notes" | Steps 1 → 2 → 2b → 3 → Notes Export |
 | **Full HTML report** | "full report", "HTML report", "summarise", "digest", "analyse", "with player" | Steps 1 → 7 |
 
 **Timestamp default:** timestamps are **off** unless the user says "with timestamps" or "timestamped".
@@ -97,11 +99,21 @@ If a `LANG_WARN:` line is present in the output, the requested language was not 
 
 1. Parse the transcript output from Step 2. Extract the `TITLE:`, `DATE:`, `TIME:`, and `LANG:` metadata lines, then collect all transcript lines (those starting with `[`).
 
-2. Determine the timestamp preference:
+2. **Length check — ask before formatting long transcripts.** Count the transcript lines. If the count exceeds **1500 lines** (roughly 45+ minutes of video), pause and ask the user:
+
+   > This is a long transcript (~{N} lines). Formatting it into clean prose will take a while. Would you like me to:
+   > 1. **Raw dump** — just strip timestamps and save as-is (fast)
+   > 2. **Formatted** — merge fragments, add punctuation and paragraphs (slow)
+
+   Wait for the user's choice before proceeding. If the count is 1500 or fewer, default to formatted output without asking.
+
+3. Determine the timestamp preference:
    - **Without timestamps** (default): strip the `[H:MM:SS] ` or `[M:SS] ` prefix, leaving only the text.
    - **With timestamps**: keep timestamps, e.g. `[1:23] Hello world`. Only when the user explicitly asks for them.
 
-3. **Format the transcript for readability.** Raw YouTube transcripts are a wall of text with no punctuation or structure. Clean them up:
+4. **If the user chose "Raw dump" (or the default for short videos when skipping the format step):** strip timestamps using a shell command (e.g. `sed 's/^\[[0-9:]*\] //'`) and write directly. Do not attempt to merge, punctuate, or restructure. This should take seconds, not minutes.
+
+5. **If the user chose "Formatted":** clean up the transcript for readability:
    - **Merge fragments:** join the raw caption segments into continuous prose. Remove line breaks that split mid-sentence.
    - **Add punctuation:** insert periods, commas, question marks, and other punctuation where natural pauses, sentence boundaries, and clause breaks occur. Capitalise the first word after each period/question mark.
    - **Paragraph breaks:** insert a blank line between paragraphs. Start a new paragraph when the speaker shifts topic, when there is a clear rhetorical transition, or roughly every 3–6 sentences — whichever comes first. Aim for readable, well-paced paragraphs, not a single block of text.
@@ -213,41 +225,81 @@ Key Point count is governed by content density (3–8 typical), not video length
 
 ### Summary Export
 
-**Run this section when the output mode is "Summary text only" or "Quick export".** After Step 3 completes, do the following:
+**Run this section when the output mode is "Summary only" or "Quick export".** After Step 3 completes, do the following:
 
-1. Build a plain-text file from the content generated in Step 3. Strip all HTML tags — this is a plain-text file, not HTML.
+1. Build a Markdown file from the content generated in Step 3. Strip all HTML tags and convert to proper Markdown formatting.
 
 2. Build the output file:
    - Directory: `~/Downloads/video-lens/summaries/` — create with `mkdir -p ~/Downloads/video-lens/summaries/`
-   - Filename: `YYYY-MM-DD-HHMMSS-summary_<VIDEO_ID>_<slug>.txt` (same slug rules as Step 4)
+   - Filename: `YYYY-MM-DD-HHMMSS-summary_<VIDEO_ID>_<slug>.md` (same slug rules as Step 4)
    - File content:
-     ```
-     Title: {title}
-     URL: https://www.youtube.com/watch?v={VIDEO_ID}
-     {META_LINE}
-     Date: {date}
+     ```markdown
+     # {title}
 
-     ===  SUMMARY  ===
+     > **URL:** https://www.youtube.com/watch?v={VIDEO_ID}
+     > **{META_LINE}**
+     > **Date:** {date}
+
+     ---
+
+     ## Summary
 
      {summary text}
 
-     ===  KEY POINTS  ===
+     ## Key Points
 
-     {numbered list — each key point as: "N. Bold headline — insight sentence\n   Analytical paragraph\n"}
+     {numbered list with **bold headlines** — each key point as:}
+     {1. **Headline** — insight sentence}
+     {   Analytical paragraph with blank line between items}
 
-     ===  TAKEAWAY  ===
+     ## Takeaway
 
      {takeaway text}
 
-     ===  OUTLINE  ===
+     ## Outline
 
-     {each entry as: "[M:SS] Title — Detail sentence"}
+     {each entry as: "- **[M:SS]** Title — Detail sentence"}
      ```
 
 3. Write the file using the Write tool. Print the path to the user: `SUMMARY: <path>`.
 
-If the mode is **Summary text only**, stop here — do not continue to Steps 4–7.
-If the mode is **Quick export**, also run Transcript Export (order does not matter), then stop.
+If the mode is **Summary only**, stop here — do not continue to Steps 4–7.
+If the mode is **Quick export**, also run Notes Export and Transcript Export, then stop.
+
+### Notes Export
+
+**Run this section when the output mode is "Notes only" or "Quick export".** After Step 3 completes, do the following:
+
+Generate study notes from the transcript as if a diligent university student were taking notes during a lecture. The goal is a document you can study from and revise with before an exam.
+
+1. Analyse the full transcript and produce a Markdown file with these sections:
+
+   **Title & metadata** — same header format as Summary Export.
+
+   **## Key Concepts** — numbered list of the most important ideas, definitions, and frameworks. Each item should be concise but complete enough to understand without watching the video. Use `**bold**` for terms and names.
+
+   **## Detailed Notes** — the main body. Organised by topic (use `### Sub-headings`). Write in concise bullet points. Rules:
+   - Capture **all** important information: facts, figures, names, dates, URLs, commands, code snippets, formulas, step-by-step procedures.
+   - When the video mentions **prompts, templates, commands, code, or configurations**, reproduce them in full inside fenced code blocks (`` ``` ``). These are high-value for studying.
+   - When the video describes a **framework, method, or process** (e.g. SWIFT), lay it out as a numbered list with sub-bullets explaining each step.
+   - Use `> blockquote` for notable direct quotes from speakers.
+   - Keep bullet points short (1–2 sentences max). Prefer lists over paragraphs.
+   - Group related bullets under descriptive sub-headings.
+
+   **## Prompts & Templates** — if the video contains any prompts, templates, configuration snippets, scripts, or copy-paste resources, collect them all here in one section with fenced code blocks. Label each one. If there are none, omit this section.
+
+   **## Quick Review** — a condensed cheat-sheet version: 10–20 of the most critical facts/takeaways as a simple bullet list. This is the "night before the exam" section.
+
+   **## Glossary** — if the video introduces domain-specific terms, list them with short definitions. If none, omit.
+
+2. Build the output file:
+   - Directory: `~/Downloads/video-lens/notes/` — create with `mkdir -p ~/Downloads/video-lens/notes/`
+   - Filename: `YYYY-MM-DD-HHMMSS-notes_<VIDEO_ID>_<slug>.md` (same slug rules as Step 4)
+
+3. Write the file using the Write tool. Print the path to the user: `NOTES: <path>`.
+
+If the mode is **Notes only**, stop here — do not continue to Steps 4–7.
+If the mode is **Quick export**, this step runs alongside Summary Export and Transcript Export (order does not matter).
 
 ### 4. Determine the output filename
 
